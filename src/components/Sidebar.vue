@@ -48,16 +48,16 @@
             class="custom-dropdown"
             @click="toggleDropdown"
             :class="{ 'is-open': isDropdownOpen }"
-            :disabled="mode === 'prompt' && selectedAction.key === 'openPrompt'"
+            :disabled="mode === 'prompt'"
           >
             <span v-if="mode === 'prompt'">
               Open Prompt <small>(using {{ availableToolsCount }} tools)</small>
             </span>
             <span v-else>{{ selectedAction.label }}</span>
-            <i class="fa-solid fa-chevron-down dropdown-arrow" v-if="!(mode === 'prompt' && selectedAction.key === 'openPrompt')"></i>
+            <i class="fa-solid fa-chevron-down dropdown-arrow" v-if="mode !== 'prompt'"></i>
           </button>
           <div 
-            v-show="isDropdownOpen && !(mode === 'prompt' && selectedAction.key === 'openPrompt')" 
+            v-show="isDropdownOpen && mode !== 'prompt'" 
             class="dropdown-menu"
             @click="closeDropdown"
           >
