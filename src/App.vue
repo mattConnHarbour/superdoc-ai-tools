@@ -3,7 +3,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { SuperDoc } from 'superdoc'
 import { AIActions } from '@superdoc-dev/ai'
 import Sidebar from './components/Sidebar.vue'
-import { actionsDictionary, handleOpenPrompt, executeToolCallsFromPrompt } from './actions.js'
+import { ActionHandler } from './actions.js'
+import { ActionLogger } from './logging.js'
 import 'superdoc/style.css'
 import './style.css'
 
@@ -13,30 +14,19 @@ const aiInstance = ref(null)
 const superdocInstance = ref(null)
 const prompt = ref('')
 const isDropdownOpen = ref(false)
-const actionLogs = ref([])
 const mode = ref('prompt') // 'prompt' or 'tool'
-let currentLogId = 0
+let actionHandler = null
+let logger = null
 
-// Build regular actions from dictionary (no openPrompt)
-const availableActions = ref(
-  Object.keys(actionsDictionary)
-    .sort()
-    .map(key => ({
-      key,
-      ...actionsDictionary[key]
-    }))
-)
-
-
-const selectedAction = ref(availableActions.value[0])
+const selectedAction = ref(null)
 
 // Computed properties for the new interface
 const availableToolsCount = computed(() => {
-  return availableActions.value.length
+  return actionHandler?.availableActions?.length || 0
 })
 
 const filteredActions = computed(() => {
-  return availableActions.value
+  return actionHandler?.availableActions || []
 })
 
 // Functions for mode switching
@@ -45,31 +35,6 @@ function handleModeUpdate(newMode) {
   isDropdownOpen.value = false
 }
 
-function truncateText(text, maxLength) {
-  if (!text) return ''
-  return text.length > maxLength ? text.substring(0, maxLength) + '...' : text
-}
-
-function addActionLog(action, prompt) {
-  const log = {
-    id: currentLogId++,
-    action: action,
-    prompt: prompt,
-    status: 'Starting...',
-    partialResult: null,
-    fullResult: null,
-    error: null
-  }
-  actionLogs.value.push(log)
-  return log
-}
-
-function updateCurrentLog(updates) {
-  if (actionLogs.value.length > 0) {
-    const currentLog = actionLogs.value[actionLogs.value.length - 1]
-    Object.assign(currentLog, updates)
-  }
-}
 
 function initializeAI(superdoc) {
   const apiKey = import.meta.env.VITE_OPENAI_API_KEY
@@ -110,35 +75,31 @@ function initializeAI(superdoc) {
     onReady: () => {
       statusText.value = 'AI is ready. Select an action and enter a prompt.'
       buttonsEnabled.value = true
+      // Initialize logger and action handler when AI is ready
+      logger = new ActionLogger()
+      actionHandler = new ActionHandler(aiInstance, logger)
+      // Set default selected action
+      selectedAction.value = actionHandler.availableActions[0]
     },
     onStreamingStart: () => {
       statusText.value = 'AI is processing your request...'
       buttonsEnabled.value = false
-      updateCurrentLog({ status: 'Processing...' })
+      logger.updateCurrentLog({ status: 'Processing...' })
     },
     onStreamingPartialResult: (context) => {
       statusText.value = 'AI is streaming results...'
-      updateCurrentLog({ 
-        status: 'Streaming...', 
-        partialResult: truncateText(context.partialResult, 100) 
-      })
+      logger.updateStreamingResult(context)
     },
     onStreamingEnd: (context) => {
       statusText.value = 'AI completed successfully. Ready for next action.'
       // buttonsEnabled.value = true
-      updateCurrentLog({ 
-        status: 'Done.', 
-        fullResult: truncateText(String(context.fullResult), 100) 
-      })
+      logger.updateStreamingEnd(context)
     },
     onError: (error) => {
       console.error(error)
       statusText.value = `Error: ${error.message}`
       // buttonsEnabled.value = true
-      updateCurrentLog({ 
-        status: 'Error', 
-        error: error.message 
-      })
+      logger.updateError(error)
     }
   })
 
@@ -166,8 +127,7 @@ async function executeAction() {
 
   // Create log entry for this action
   const logLabel = mode.value === 'prompt' ? 'Open Prompt' : selectedAction.value.label
-  addActionLog(logLabel, promptToExecute)
-  const originalLogId = actionLogs.value[actionLogs.value.length - 1]?.id
+  logger.addActionLog(logLabel, promptToExecute)
   
   // Clear the prompt after a small delay to avoid editor transaction conflicts
   setTimeout(() => {
@@ -179,11 +139,15 @@ async function executeAction() {
   try {
     if (mode.value === 'prompt') {
       // Handle open prompt mode - calls AI and potentially executes tools
-      const response = await handleOpenPrompt(promptToExecute, availableActions, updateCurrentLog, originalLogId, actionLogs)
+      if (!actionHandler) {
+        throw new Error('Action handler not initialized')
+      }
+      
+      const response = await actionHandler.handleOpenPrompt(promptToExecute)
       
       if (response.type === 'tool_calls') {
         // Execute the tool calls returned by the AI
-        await executeToolCallsFromPrompt(response.toolCalls, availableActions, aiInstance, addActionLog, updateCurrentLog, originalLogId, actionLogs)
+        await actionHandler.executeToolCallsFromPrompt(response.toolCalls)
       }
       // Text responses are already handled in handleOpenPrompt
       
@@ -196,7 +160,7 @@ async function executeAction() {
   } catch (error) {
     console.error(error)
     statusText.value = `AI error: ${error.message}`
-    updateCurrentLog({ 
+    logger.updateCurrentLog({ 
       status: 'Error', 
       error: error.message 
     })
@@ -298,7 +262,7 @@ onUnmounted(() => {
           <div class="document-content">
               <div id="superdoc"></div>
               <Sidebar
-              :action-logs="actionLogs"
+              :action-logs="logger?.actionLogs?.value || []"
               :mode="mode"
               :is-dropdown-open="isDropdownOpen"
               :selected-action="selectedAction"
